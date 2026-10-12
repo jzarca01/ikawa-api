@@ -43,6 +43,8 @@ curl -X POST http://localhost:8000/login \
 
 Returns an `idToken` to use for subsequent calls.
 
+All the endpoints below require that token in an `Authorization: Bearer <idToken>` header. It is declared as a security scheme, so `/docs` shows an **Authorize** button: paste the `idToken` there once and every request will carry the header.
+
 ### GET /profiles
 
 Retrieves all profiles of the account (paginated on the Firestore side).
@@ -128,6 +130,8 @@ Every profile is returned with a `shareUrl` field reproducing exactly the share 
 ```
 https://share.ikawa.support/profile/?<base64>
 ```
+
+The `uuid` field is encoded as 16 raw bytes, so sentinel documents that are not real roast profiles (the account contains `EXTERNALROAST` and `externalRoast` placeholders named "External Roast") cannot carry a share URL. They are still listed, with `shareUrl` set to `null`.
 
 The base64 encodes a Wire protobuf `RoastProfile` (same as `Profile.convertToProtobuf` in the app):
 

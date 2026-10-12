@@ -9,7 +9,8 @@ from typing import Optional
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 
 load_dotenv()
@@ -408,7 +409,11 @@ def fetch_profiles(id_token: str) -> list[ProfileResponse]:
         profiles.append(profile)
 
     for profile in profiles:
-        profile.shareUrl = build_share_url(profile)
+        try:
+            profile.shareUrl = build_share_url(profile)
+        except Exception:
+            # one unencodable profile must not fail the whole listing
+            profile.shareUrl = None
 
     return profiles
 
@@ -438,27 +443,45 @@ def _bytes_field(field: int, value: bytes) -> bytes:
 def _parse_point_pairs(raw: Optional[str]) -> list[tuple[float, float]]:
     if not raw:
         return []
-    values = [float(v) for v in raw.split(",")]
-    return [(values[i], values[i + 1]) for i in range(0, len(values) - 1, 2)]
+    values = raw.split(",")
+    points = []
+    for i in range(0, len(values) - 1, 2):
+        try:
+            points.append((float(values[i]), float(values[i + 1])))
+        except ValueError:
+            # tolerate a malformed trailing pair rather than failing the profile
+            break
+    return points
 
 
-def build_share_url(profile: ProfileResponse) -> str:
+def build_share_url(profile: ProfileResponse) -> Optional[str]:
     """Reproduces getProfileShareUrl() from ShareProfileUtil (IKAWA app).
 
     Wire RoastProfile proto: {1: schema, 2: id (uuid raw bytes), 3: name,
     4: tempPoints {1: time (ds), 2: temp (0.1 °C)}, 5: fanPoints {1: time (ds), 2: power (0-255)},
     6: tempSensor, 7: cooldownFan}. The first point of each curve keeps its value
     but has its time forced to 0 (Profile.convertToProtobuf).
+
+    Returns None when the profile id cannot be encoded as the 16 raw bytes of
+    field 2. The account holds sentinel documents (uuid "EXTERNALROAST" /
+    "externalRoast") that are not real roast profiles; they have no share URL.
     """
     # TempSensor: ABOVE_BEANS=0, BELOW_BEANS=1, ABOVE_ROBUST=2 -> mapped to ABOVE_BEANS
     temp_sensor = 1 if profile.tempSensor == 1 else 0
+
+    try:
+        uuid_bytes = bytes.fromhex(profile.uuid.replace("-", "").replace(" ", ""))
+    except (ValueError, AttributeError):
+        return None
+    if len(uuid_bytes) != 16:
+        return None
 
     temp_points = _parse_point_pairs(profile.roastTempPoints)
     fan_points = _parse_point_pairs(profile.roastFanPoints)
 
     msg = bytearray()
     msg += _int_field(1, profile.schemeVersion)
-    msg += _bytes_field(2, bytes.fromhex(profile.uuid.replace("-", "").replace(" ", "")))
+    msg += _bytes_field(2, uuid_bytes)
     msg += _bytes_field(3, profile.name.encode())
     for i, (time_s, temp_c) in enumerate(temp_points):
         t = 0 if i == 0 else int(time_s * 10)
@@ -478,6 +501,14 @@ def build_share_url(profile: ProfileResponse) -> str:
 
 app = FastAPI(title="IKAWA Profiles API")
 
+# Declared as a security scheme so Swagger exposes an "Authorize" button and
+# sends "Authorization: Bearer <idToken>" to every protected endpoint.
+bearer_scheme = HTTPBearer()
+
+
+def _id_token(credentials: HTTPAuthorizationCredentials) -> str:
+    return credentials.credentials
+
 
 @app.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest):
@@ -485,27 +516,24 @@ def login(req: LoginRequest):
 
 
 @app.get("/profiles", response_model=list[ProfileResponse])
-def get_profiles(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    id_token = authorization.removeprefix("Bearer ")
-    return fetch_profiles(id_token)
+def get_profiles(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    return fetch_profiles(_id_token(credentials))
 
 
 @app.post("/profiles/import")
-def import_profile_endpoint(req: ImportRequest, authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    id_token = authorization.removeprefix("Bearer ")
-    return import_profile(id_token, req.shareUrl)
+def import_profile_endpoint(
+    req: ImportRequest, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+):
+    return import_profile(_id_token(credentials), req.shareUrl)
 
 
 @app.post("/profiles/import/bulk", response_model=BulkImportResponse)
-def import_bulk_endpoint(req: BulkImportRequest, authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    id_token = authorization.removeprefix("Bearer ")
-    return import_profiles_bulk(id_token, req.shareUrls, req.maxConcurrency, req.skipDuplicates)
+def import_bulk_endpoint(
+    req: BulkImportRequest, credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+):
+    return import_profiles_bulk(
+        _id_token(credentials), req.shareUrls, req.maxConcurrency, req.skipDuplicates
+    )
 
 
 @app.get("/health")
