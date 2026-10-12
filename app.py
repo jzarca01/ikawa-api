@@ -14,8 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 
 load_dotenv()
 
-app = FastAPI(title="IKAWA Profiles API")
-
+PORT = int(os.getenv("PORT", 8000))
 FIREBASE_API_KEY = os.getenv("FIREBASE_API_KEY")
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
 
@@ -477,6 +476,8 @@ def build_share_url(profile: ProfileResponse) -> str:
     b64 = base64.b64encode(bytes(msg)).decode()
     return SHARE_URL_PREFIX + b64
 
+app = FastAPI(title="IKAWA Profiles API")
+
 
 @app.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest):
@@ -510,3 +511,15 @@ def import_bulk_endpoint(req: BulkImportRequest, authorization: str = Header(...
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/")
+async def root():
+    return {
+        "name": "IKAWA Profiles API",
+        "version": "1.0.0",
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
