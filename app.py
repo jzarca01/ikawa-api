@@ -272,6 +272,7 @@ def _write_profile_document(id_token: str, uid: str, profile: ProfileResponse, n
     if resp.status_code != 200:
         raise HTTPException(resp.status_code, resp.text)
 
+    profile.userID = uid
     profile.shareUrl = build_share_url(profile)
     return {
         "status": "imported",
